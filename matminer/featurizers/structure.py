@@ -1,23 +1,25 @@
 from __future__ import division, unicode_literals, print_function
 
 import itertools
-from math import pi
+from math import pi, fabs
 from operator import itemgetter
 import warnings
 
 import numpy as np
 import scipy.constants as const
 
+from pymatgen import Structure
 from pymatgen.analysis.defects.point_defects import \
     ValenceIonicRadiusEvaluator
-from pymatgen.analysis.local_env import get_okeeffe_distance_prediction, MinimumDistanceNN, \
-    VoronoiNN, MinimumOKeeffeNN, MinimumVIRENN
-from pymatgen.analysis.structure_analyzer import OrderParameters
+from pymatgen.analysis.ewald import EwaldSummation
 from pymatgen.core.periodic_table import Specie, Element
-from pymatgen.analysis.structure_analyzer import VoronoiCoordFinder as VCF
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
+from pymatgen.analysis.local_env import VoronoiNN, JMolNN, \
+    MinimumDistanceNN, MinimumOKeeffeNN, MinimumVIRENN
 
 from matminer.featurizers.base import BaseFeaturizer
+from matminer.featurizers.site import OPSiteFingerprint, CrystalSiteFingerprint, \
+    CoordinationNumber
 from matminer.featurizers.stats import PropertyStats
 
 __authors__ = 'Anubhav Jain <ajain@lbl.gov>, Saurabh Bajaj <sbajaj@lbl.gov>, ' \
@@ -30,22 +32,24 @@ ANG_TO_BOHR = const.value('Angstrom star') / const.value('Bohr radius')
 # To do:
 # - Use local_env-based neighbor finding
 #   once this is part of the stable Pymatgen version.
+# - Use more than 1 method for MinimumRelativeDistance
 
 class DensityFeatures(BaseFeaturizer):
 
     def __init__(self, desired_features=None):
-        self.features = ["density", "vpa", "packing fraction"] if not desired_features else desired_features
+        self.features = ["density", "vpa", "packing fraction"] if not \
+            desired_features else desired_features
 
     def featurize(self, s):
-        features = []
+        output = []
 
         if "density" in self.features:
-            features.append(s.density)
+            output.append(s.density)
 
         if "vpa" in self.features:
             if not s.is_ordered:
                 raise ValueError("Disordered structure support not built yet.")
-            features.append(s.volume / len(s))
+            output.append(s.volume / len(s))
 
         if "packing fraction" in self.features:
             if not s.is_ordered:
@@ -53,19 +57,66 @@ class DensityFeatures(BaseFeaturizer):
             total_rad = 0
             for site in s:
                 total_rad += site.specie.atomic_radius ** 3
-            features.append(4 * pi * total_rad / (3 * s.volume))
+            output.append(4 * pi * total_rad / (3 * s.volume))
 
-        return features
+        return output
 
     def feature_labels(self):
-        all_features = ["density", "vpa", "packing fraction"]
+        all_features = ["density", "vpa", "packing fraction"]  # enforce order
         return [x for x in all_features if x in self.features]
 
     def citations(self):
-        return [""]
+        return []
 
     def implementors(self):
         return ["Saurabh Bajaj", "Anubhav Jain"]
+
+
+class GlobalSymmetryFeatures(BaseFeaturizer):
+    crystal_idx = {"triclinic": 7,
+                   "monoclinic": 6,
+                   "orthorhombic": 5,
+                   "tetragonal": 4,
+                   "trigonal": 3,
+                   "hexagonal": 2,
+                   "cubic": 1
+                   }
+
+    def __init__(self, desired_features=None):
+        self.features = ["spacegroup_num", "crystal_system",
+                         "crystal_system_int", "is_centrosymmetric"] if not \
+            desired_features else desired_features
+
+    def featurize(self, s):
+        sga = SpacegroupAnalyzer(s)
+        output = []
+
+        if "spacegroup_num" in self.features:
+            output.append(sga.get_space_group_number())
+
+        if "crystal_system" in self.features:
+            output.append(sga.get_crystal_system())
+
+        if "crystal_system_int" in self.features:
+            output.append(GlobalSymmetryFeatures.crystal_idx[
+                              sga.get_crystal_system()])
+
+        if "is_centrosymmetric" in self.features:
+            output.append(sga.is_laue())
+
+        return output
+
+    def feature_labels(self):
+        all_features = ["spacegroup_num", "crystal_system",
+                        "crystal_system_int",
+                        "is_centrosymmetric"]  # enforce order
+        return [x for x in all_features if x in self.features]
+
+    def citations(self):
+        return []
+
+    def implementors(self):
+        return ["Anubhav Jain"]
 
 
 class RadialDistributionFunction(BaseFeaturizer):
@@ -117,10 +168,10 @@ class RadialDistributionFunction(BaseFeaturizer):
         return ["radial distribution function"]
 
     def citations(self):
-        return ("")
+        return []
 
     def implementors(self):
-        return ("Saurabh Bajaj")
+        return ["Saurabh Bajaj"]
 
 
 class PartialRadialDistributionFunction(BaseFeaturizer):
@@ -169,7 +220,8 @@ class PartialRadialDistributionFunction(BaseFeaturizer):
             return site.specie.symbol if isinstance(site.specie,
                                                     Element) else site.specie.element.symbol
 
-        for site, nlst in zip(s.sites, neighbors_lst):  # Each list is a list for each site
+        for site, nlst in zip(s.sites,
+                              neighbors_lst):  # Each list is a list for each site
             my_elem = get_symbol(site)
 
             for neighbor in nlst:
@@ -182,7 +234,7 @@ class PartialRadialDistributionFunction(BaseFeaturizer):
         prdf = {}
         dist_bins = np.arange(0, self.cutoff + self.bin_size, self.bin_size)
         shell_volume = 4.0 / 3.0 * pi * (
-            np.power(dist_bins[1:], 3) - np.power(dist_bins[:-1], 3))
+                np.power(dist_bins[1:], 3) - np.power(dist_bins[:-1], 3))
         for key, distances in distances_by_type.items():
             # Compute histogram of distances
             dist_hist, dist_bins = np.histogram(distances,
@@ -199,10 +251,10 @@ class PartialRadialDistributionFunction(BaseFeaturizer):
         return ["partial radial distribution functions"]
 
     def citations(self):
-        return ("")
+        return []
 
     def implementors(self):
-        return ("Saurabh Bajaj")
+        return ["Saurabh Bajaj"]
 
 
 class RadialDistributionFunctionPeaks(BaseFeaturizer):
@@ -219,11 +271,11 @@ class RadialDistributionFunctionPeaks(BaseFeaturizer):
     def featurize(self, rdf):
         """
         Get location of highest peaks in RDF.
-    
+
         Args:
             rdf: (ndarray) RDF as obtained from the
                     RadialDistributionFunction class.
-    
+
         Returns: (ndarray) distances of highest peaks in descending order
                 of the peak height
         """
@@ -235,10 +287,10 @@ class RadialDistributionFunctionPeaks(BaseFeaturizer):
         return ["radial distribution function peaks"]
 
     def citations(self):
-        return ("")
+        return []
 
     def implementors(self):
-        return ("Saurabh Bajaj")
+        return ["Saurabh Bajaj"]
 
 
 class ElectronicRadialDistributionFunction(BaseFeaturizer):
@@ -305,8 +357,8 @@ class ElectronicRadialDistributionFunction(BaseFeaturizer):
                 neigh_charge = float(neigh.specie.oxi_state)
                 bin_index = int(dist / self.dr)
                 redf_dict["distribution"][bin_index] += (
-                                                            this_charge * neigh_charge) / (
-                                                            struct.num_sites * dist)
+                                                                this_charge * neigh_charge) / (
+                                                                struct.num_sites * dist)
 
         return [redf_dict]
 
@@ -314,15 +366,15 @@ class ElectronicRadialDistributionFunction(BaseFeaturizer):
         return ["electronic radial distribution function"]
 
     def citations(self):
-        return ("@article{title={Method for the computational comparison"
+        return ["@article{title={Method for the computational comparison"
                 " of crystal structures}, volume={B61}, pages={29-36},"
                 " DOI={10.1107/S0108768104028344},"
                 " journal={Acta Crystallographica Section B},"
                 " author={Willighagen, E. L. and Wehrens, R. and Verwer,"
-                " P. and de Gelder R. and Buydens, L. M. C.}, year={2005}}")
+                " P. and de Gelder R. and Buydens, L. M. C.}, year={2005}}"]
 
     def implementors(self):
-        return ("Nils E. R. Zimmermann")
+        return ["Nils E. R. Zimmermann"]
 
 
 class CoulombMatrix(BaseFeaturizer):
@@ -333,22 +385,23 @@ class CoulombMatrix(BaseFeaturizer):
     off-diagonal elements M_ij = Z_i*Z_j/|R_i-R_j|
     and diagonal elements 0.5*Z_i^2.4, where Z_i and R_i denote
     the nuclear charge and the position of atom i, respectively.
+
+    Args:
+        diag_elems: (bool) flag indicating whether (True, default) to use
+                    the original definition of the diagonal elements;
+                    if set to False, the diagonal elements are set to zero.
     """
 
-    def __init__(self, diag_elems=False):
+    def __init__(self, diag_elems=True):
         self.diag_elems = diag_elems
 
     def featurize(self, s):
         """
         Get Coulomb matrix of input structure.
-    
+
         Args:
             s: input Structure (or Molecule) object.
-            diag_elems: (bool) flag indicating whether (True) to use
-                    the original definition of the diagonal elements;
-                    if set to False (default),
-                    the diagonal elements are set to zero.
-    
+
         Returns:
             m: (Nsites x Nsites matrix) Coulomb matrix.
         """
@@ -372,16 +425,16 @@ class CoulombMatrix(BaseFeaturizer):
         return [np.array(m)]
 
     def feature_labels(self):
-        return ["Coulomb matrix"]
+        return ["coulomb matrix"]
 
     def citations(self):
-        return ("@article{rupp_tkatchenko_muller_vonlilienfeld_2012, title={"
+        return ["@article{rupp_tkatchenko_muller_vonlilienfeld_2012, title={"
                 "Fast and accurate modeling of molecular atomization energies"
                 " with machine learning}, volume={108},"
                 " DOI={10.1103/PhysRevLett.108.058301}, number={5},"
                 " pages={058301}, journal={Physical Review Letters}, author={"
                 "Rupp, Matthias and Tkatchenko, Alexandre and M\"uller,"
-                " Klaus-Robert and von Lilienfeld, O. Anatole}, year={2012}}")
+                " Klaus-Robert and von Lilienfeld, O. Anatole}, year={2012}}"]
 
     def implementors(self):
         return ["Nils E. R. Zimmermann"]
@@ -394,19 +447,15 @@ class SineCoulombMatrix(BaseFeaturizer):
     115, 16, 2015). It is identical to the Coulomb matrix, except
     that the inverse distance function is replaced by the inverse of a
     sin**2 function of the vector between the sites which is periodic
-    in the dimensions of the structure lattice. It is the best performing
-    coulomb matrix model for machine learning formation energies of 
-    periodic crystals. See paper for details.
+    in the dimensions of the structure lattice. See paper for details.
+
+    Args:
+        diag_elems (bool): flag indication whether (True, default) to use
+                the original definition of the diagonal elements;
+                if set to False, the diagonal elements are set to 0
     """
 
-    def __init__(self, diag_elems=False):
-        """
-        Args:
-            diag_elems (bool): flag indication whether (True) to use
-                    the original definition of the diagonal elements;
-                    if set to False (default),
-                    the diagonal elements are set to 0
-        """
+    def __init__(self, diag_elems=True):
         self.diag_elems = diag_elems
 
     def featurize(self, s):
@@ -432,17 +481,18 @@ class SineCoulombMatrix(BaseFeaturizer):
                 elif i < j:
                     vec = coords[i] - coords[j]
                     coord_vec = np.sin(pi * vec) ** 2
-                    trig_dist = np.linalg.norm((np.matrix(coord_vec) * lattice).A1) * ANG_TO_BOHR
+                    trig_dist = np.linalg.norm(
+                        (np.matrix(coord_vec) * lattice).A1) * ANG_TO_BOHR
                     sin_mat[i][j] = Zs[i] * Zs[j] / trig_dist
                 else:
                     sin_mat[i][j] = sin_mat[j][i]
         return [sin_mat]
 
     def feature_labels(self):
-        return ["sine Coulomb matrix"]
+        return ["sine coulomb matrix"]
 
     def citations(self):
-        return ("@article {QUA:QUA24917,"
+        return ["@article {QUA:QUA24917,"
                 "author = {Faber, Felix and Lindmaa, Alexander and von Lilienfeld, O. Anatole and Armiento, Rickard},"
                 "title = {Crystal structure representations for machine learning models of formation energies},"
                 "journal = {International Journal of Quantum Chemistry},"
@@ -454,7 +504,7 @@ class SineCoulombMatrix(BaseFeaturizer):
                 "pages = {1094--1101},"
                 "keywords = {machine learning, formation energies, representations, crystal structure, periodic systems},"
                 "year = {2015},"
-                "}")
+                "}"]
 
     def implementors(self):
         return ["Kyle Bystrom"]
@@ -464,31 +514,50 @@ class OrbitalFieldMatrix(BaseFeaturizer):
     """
     This function generates an orbital field matrix (OFM) as developed
     by Pham et al (arXiv, May 2017). Each atom is described by a 32-element
-    vector uniquely representing the valence subshell. A 32x32 matrix is formed
+    vector (or 39-element vector, see period tag for details) uniquely
+    representing the valence subshell. A 32x32 (39x39) matrix is formed
     by multiplying two atomic vectors. An OFM for an atomic environment is the
     sum of these matrices for each atom the center atom coordinates with
     multiplied by a distance function (In this case, 1/r times the weight of
-    the coordinating atomic in the Voronoi Polyhedra method). The OFM of a structure
-    or molecule is the average of the OFMs for all the sites in the structure
+    the coordinating atom in the Voronoi Polyhedra method). The OFM of a structure
+    or molecule is the average of the OFMs for all the sites in the structure.
+
+    Args:
+        period_tag (bool): In the original OFM, an element is represented
+                by a vector of length 32, where each element is 1 or 0,
+                which represents the valence subshell of the element.
+                With period_tag=True, the vector size is increased
+                to 39, where the 7 extra elements represent the period
+                of the element. Note lanthanides are treated as period 6,
+                actinides as period 7. Default False as in the original paper.
+
+    ...attribute:: size
+        Either 32 or 39, the size of the vectors used to describe elements.
     """
 
-    def __init__(self):
+    def __init__(self, period_tag=False):
         my_ohvs = {}
+        if period_tag:
+            self.size = 39
+        else:
+            self.size = 32
         for Z in range(1, 95):
             el = Element.from_Z(Z)
-            my_ohvs[Z] = self.get_ohv(el)
+            my_ohvs[Z] = self.get_ohv(el, period_tag)
             my_ohvs[Z] = np.matrix(my_ohvs[Z])
         self.ohvs = my_ohvs
 
-    def get_ohv(self, sp):
+    def get_ohv(self, sp, period_tag):
         """
-        Get the "one-hot-vector" for pymatgen Element sp. This 32-length
+        Get the "one-hot-vector" for pymatgen Element sp. This 32 or 39-length
         vector represents the valence shell of the given element.
         Args:
             sp (Element): element whose ohv should be returned
+            period_tag (bool): If true, the vector contains items
+                    corresponding to the period of the element
 
         Returns:
-            my_ohv (numpy array length 32): ohv for sp
+            my_ohv (numpy array length 39 if period_tag, else 32): ohv for sp
         """
         el_struct = sp.full_electronic_structure
         ohd = {j: {i + 1: 0 for i in range(2 * (2 * j + 1))} for j in range(4)}
@@ -499,11 +568,13 @@ class OrbitalFieldMatrix(BaseFeaturizer):
             if el_struct[-1 - shell_num][0] < max_n - 2:
                 shell_num += 1
                 continue
-            elif el_struct[-1 - shell_num][0] < max_n - 1 and el_struct[-1 - shell_num][1] != u'f':
+            elif el_struct[-1 - shell_num][0] < max_n - 1 and \
+                    el_struct[-1 - shell_num][1] != u'f':
                 shell_num += 1
                 continue
             elif el_struct[-1 - shell_num][0] < max_n and (
-                            el_struct[-1 - shell_num][1] != u'd' and el_struct[-1 - shell_num][1] != u'f'):
+                    el_struct[-1 - shell_num][1] != u'd' and
+                    el_struct[-1 - shell_num][1] != u'f'):
                 shell_num += 1
                 continue
             curr_shell = el_struct[-1 - shell_num]
@@ -518,12 +589,17 @@ class OrbitalFieldMatrix(BaseFeaturizer):
             ohd[l][curr_shell[2]] = 1
             nume += curr_shell[2]
             shell_num += 1
-        my_ohv = np.zeros(32, np.int)
+        my_ohv = np.zeros(self.size, np.int)
         k = 0
         for j in range(4):
             for i in range(2 * (2 * j + 1)):
                 my_ohv[k] = ohd[j][i + 1]
                 k += 1
+        if period_tag:
+            row = sp.row
+            if row > 7:
+                row -= 2
+            my_ohv[row + 31] = 1
         return my_ohv
 
     def get_single_ofm(self, site, site_dict):
@@ -538,15 +614,16 @@ class OrbitalFieldMatrix(BaseFeaturizer):
             site_dict (dict of Site:float): chemical environment
 
         Returns:
-            atom_ofm (32 X 32 numpy matrix): ofm for site
+            atom_ofm (size X size numpy matrix): ofm for site
         """
         ohvs = self.ohvs
-        atom_ofm = np.matrix(np.zeros((32, 32)))
+        atom_ofm = np.matrix(np.zeros((self.size, self.size)))
         ref_atom = ohvs[site.specie.Z]
         for other_site in site_dict:
             scale = site_dict[other_site]
             other_atom = ohvs[other_site.specie.Z]
-            atom_ofm += other_atom.T * ref_atom * scale / site.distance(other_site) / ANG_TO_BOHR
+            atom_ofm += other_atom.T * ref_atom * scale / site.distance(
+                other_site) / ANG_TO_BOHR
         return atom_ofm
 
     def get_atom_ofms(self, struct, symm=False):
@@ -562,14 +639,14 @@ class OrbitalFieldMatrix(BaseFeaturizer):
                     distinct sites
 
         Returns:
-            ofms ([32 X 32 matrix] X len(struct)): ofms for struct
+            ofms ([size X size matrix] X len(struct)): ofms for struct
             if symm:
-                ofms ([32 X 32 matrix] X number of symmetrically distinct sites):
+                ofms ([size X size matrix] X number of symmetrically distinct sites):
                     ofms for struct
                 counts: number of identical sites for each ofm
         """
         ofms = []
-        vcf = VCF(struct, allow_pathological=True)
+        vnn = VoronoiNN(allow_pathological=True)
         if symm:
             symm_struct = SpacegroupAnalyzer(struct).get_symmetrized_structure()
             indices = [lst[0] for lst in symm_struct.equivalent_indices]
@@ -578,7 +655,7 @@ class OrbitalFieldMatrix(BaseFeaturizer):
             indices = [i for i in range(len(struct.sites))]
         for index in indices:
             ofms.append(self.get_single_ofm(struct.sites[index], \
-                                            vcf.get_voronoi_polyhedra(index)))
+                                            vnn.get_voronoi_polyhedra(struct, index)))
         if symm:
             return ofms, counts
         return ofms
@@ -593,7 +670,7 @@ class OrbitalFieldMatrix(BaseFeaturizer):
     def get_structure_ofm(self, struct):
         """
         Calls get_mean_ofm on the results of get_atom_ofms
-        to give a 32 X 32 matrix characterizing a structure
+        to give a size X size matrix characterizing a structure
         """
         ofms, counts = self.get_atom_ofms(struct, True)
         return self.get_mean_ofm(ofms, counts)
@@ -609,32 +686,32 @@ class OrbitalFieldMatrix(BaseFeaturizer):
             s (Structure): structure to characterize
 
         Returns:
-            mean_ofm (32 X 32 matrix): orbital field matrix
+            mean_ofm (size X size matrix): orbital field matrix
                     characterizing s
         """
         s *= [3, 3, 3]
         ofms, counts = self.get_atom_ofms(s, True)
         mean_ofm = self.get_mean_ofm(ofms, counts)
-        return [mean_ofm]
+        return [mean_ofm.A]
 
     def feature_labels(self):
         return ["orbital field matrix"]
 
     def citations(self):
-        return ("@ARTICLE{2017arXiv170501043P,"
-                "author = {{Pham}, T. L. and {Kino}, H. and {Terakura}, K. and {Miyake}, T. and "
-                "{Takigawa}, I. and {Tsuda}, K. and {Dam}, H. C.},"
-                "title = \"{Machine learning reveals orbital interaction in crystalline materials}\","
-                "journal = {ArXiv e-prints},"
-                "archivePrefix = \"arXiv\","
-                "eprint = {1705.01043},"
-                "primaryClass = \"cond-mat.mtrl-sci\","
-                "keywords = {Condensed Matter - Materials Science},"
-                "year = 2017,"
-                "month = may,"
-                "adsurl = {http://adsabs.harvard.edu/abs/2017arXiv170501043P},"
-                "adsnote = {Provided by the SAO/NASA Astrophysics Data System}"
-                "}")
+        return ["@article{LamPham2017,"
+                "author = {{Lam Pham}, Tien and Kino, Hiori and Terakura, Kiyoyuki and "
+                "Miyake, Takashi and Tsuda, Koji and Takigawa, Ichigaku and {Chi Dam}, Hieu},"
+                "doi = {10.1080/14686996.2017.1378060},"
+                "journal = {Science and Technology of Advanced Materials},"
+                "month = {dec},"
+                "number = {1},"
+                "pages = {756--765},"
+                "publisher = {Taylor {\&} Francis},"
+                "title = {{Machine learning reveals orbital interaction in materials}},"
+                "url = {https://www.tandfonline.com/doi/full/10.1080/14686996.2017.1378060},"
+                "volume = {18},"
+                "year = {2017}"
+                "}"]
 
     def implementors(self):
         return ["Kyle Bystrom"]
@@ -660,7 +737,7 @@ class MinimumRelativeDistances(BaseFeaturizer):
     def featurize(self, s, cutoff=10.0):
         """
         Get minimum relative distances of all sites of the input structure.
-    
+
         Args:
             s: Pymatgen Structure object.
 
@@ -672,54 +749,44 @@ class MinimumRelativeDistances(BaseFeaturizer):
         min_rel_dists = []
         for site in vire.structure:
             min_rel_dists.append(min([dist / (
-                vire.radii[site.species_string] +
-                vire.radii[neigh.species_string]) for neigh, dist in \
-                                      vire.structure.get_neighbors(site, self.cutoff)]))
+                    vire.radii[site.species_string] +
+                    vire.radii[neigh.species_string]) for neigh, dist in \
+                                      vire.structure.get_neighbors(site,
+                                                                   self.cutoff)]))
         return [min_rel_dists[:]]
 
     def feature_labels(self):
         return ["minimum relative distance of each site"]
 
     def citations(self):
-        return ("")
+        return []
 
     def implementors(self):
-        return ("Nils E. R. Zimmermann")
+        return ["Nils E. R. Zimmermann"]
 
 
-class SitesOrderParameters(BaseFeaturizer):
+class SiteStatsFingerprint(BaseFeaturizer):
     """
     Calculates all order parameters (OPs) for all sites in a crystal
     structure.
     Args:
-        features ([str]): list of order parameters supported by OrderParameters
+        site_featurizer (BaseFeaturizer): a site-based featurizer
         stats ([str]): list of weighted statistics to compute for each feature.
             If stats is None, for each order parameter, a list is returned that
             contains the calculated parameter for each site in the structure.
             *Note for nth mode, stat must be 'n*_mode'; e.g. stat='2nd_mode'
-        pneighs (dict): specification and parameters of neighbor-finding
-            approach (see get_neighbors_of_site_with_index).
-        bond_angles ([float]): list of bond angles for which order parameters
-            are calculated explicitly (in addition to features)
+        min_oxi (int): minimum site oxidation state for inclusion (e.g.,
+            zero means metals/cations only)
+        max_oxi (int): maximum site oxidation state for inclusion
     """
-    def __init__(self, features=None, stats=None, pneighs=None,
-                 bond_angles=None):
-        self.features = features or ['tet', 'oct', 'bcc', 'q2', 'q4', 'q6',
-                                     'reg_tri', 'sq', 'sq_pyr', 'tri_bipyr']
-        self.stats = stats
-        self.pneighs = pneighs
-        self._types = ["cn", "lin"]
-        self._labels = ["CN", "q_lin"]
-        self._paras = [[], []]
-        self.bond_angles = bond_angles or [45, 90, 135]
-        for i in self.bond_angles:
-            self._types.append("bent")
-            self._labels.append("q_bent_{}".format(i))
-            self._paras.append([float(i), 0.0667])
-        for t in self.features:
-            self._types.append(t)
-            self._labels.append('q_' + t)
-            self._paras.append([])
+
+    def __init__(self, site_featurizer, stats=('mean', 'std_dev', 'minimum',
+                                               'maximum'), min_oxi=None,
+                 max_oxi=None):
+
+        self.site_featurizer = site_featurizer
+        self._labels = self.site_featurizer.feature_labels()
+        self.stats = tuple([stats]) if type(stats) == str else stats
         if self.stats and '_mode' in ''.join(self.stats):
             nmodes = 0
             for stat in self.stats:
@@ -727,24 +794,8 @@ class SitesOrderParameters(BaseFeaturizer):
                     nmodes = int(stat[0])
             self.nmodes = nmodes
 
-    @staticmethod
-    def from_preset(preset_name):
-        """
-        Returns OrderParameters from a preset string.
-        Args:
-            preset_name (str): options are 'matminer',
-
-        Returns:
-
-        """
-        if preset_name == 'matminer':
-            features = ['tet', 'oct', 'bcc', 'q2', 'q4', 'q6', 'reg_tri',
-                        'sq', 'sq_pyr', 'tri_bipyr']
-            stats = ['minimum', 'maximum', 'range', 'mean', 'avg_dev',
-                     '1st_mode', '2nd_mode']
-        else:
-            raise ValueError("Invalid preset_name specified!")
-        return SitesOrderParameters(features, stats)
+        self.min_oxi = min_oxi
+        self.max_oxi = max_oxi
 
     def featurize(self, s):
         """
@@ -754,48 +805,45 @@ class SitesOrderParameters(BaseFeaturizer):
             s: Pymatgen Structure object.
 
             Returns:
-                opvals: (2D array of floats) LSOP values of all sites'
+                vals: (2D array of floats) LSOP values of all sites'
                 (1st dimension) order parameters (2nd dimension). 46 order
                 parameters are computed per site: q_cn (coordination
                 number), q_lin, 35 x q_bent (starting with a target angle
                 of 5 degrees and, increasing by 5 degrees, until 175 degrees),
                 q_tet, q_oct, q_bcc, q_2, q_4, q_6, q_reg_tri, q_sq, q_sq_pyr.
         """
-        ops = OrderParameters(self._types, self._paras, 100.0)
-        opvals = [[] for t in self._types]
+        vals = [[] for t in self._labels]
         for i, site in enumerate(s.sites):
-            neighcent = get_neighbors_of_site_with_index(
-                s, i, p=self.pneighs)
-            neighcent.append(site)
-            opvalstmp = ops.get_order_parameters(
-                neighcent, len(neighcent) - 1,
-                indeces_neighs=[j for j in range(len(neighcent) - 1)])
-            for j, opval in enumerate(opvalstmp):
-                if opval is None:
-                    opvals[j].append(0.0)
-                else:
-                    opvals[j].append(opval)
+            if (self.min_oxi is None or site.specie.oxi_state >= self.min_oxi) \
+                    and (
+                    self.max_oxi is None or site.specie.oxi_state >= self.max_oxi):
+                opvalstmp = self.site_featurizer.featurize(s, i)
+                for j, opval in enumerate(opvalstmp):
+                    if opval is None:
+                        vals[j].append(0.0)
+                    else:
+                        vals[j].append(opval)
 
         if self.stats:
-            opstats = []
-            for op in opvals:
+            stats = []
+            for op in vals:
                 if '_mode' in ''.join(self.stats):
-                    modes = PropertyStats().n_numerical_modes(
-                            op, self.nmodes, 0.01)
+                    modes = self.n_numerical_modes(op, self.nmodes, 0.01)
                 for stat in self.stats:
                     if '_mode' in stat:
-                        opstats.append(modes[int(stat[0])-1])
+                        stats.append(modes[int(stat[0]) - 1])
                     else:
-                        opstats.append(PropertyStats().calc_stat(op, stat))
+                        stats.append(PropertyStats().calc_stat(op, stat))
 
-            return opstats
+            return stats
         else:
-            return opvals
+            return vals
 
     def feature_labels(self):
         if self.stats:
             labels = []
             for attr in self._labels:
+
                 for stat in self.stats:
                     labels.append('%s %s' % (stat, attr))
             return labels
@@ -803,260 +851,355 @@ class SitesOrderParameters(BaseFeaturizer):
             return self._labels
 
     def citations(self):
-        return ('@article{zimmermann_jain_2017, title={Applications of order'
+        return ['@article{zimmermann_jain_2017, title={Applications of order'
                 ' parameter feature vectors}, journal={in progress}, author={'
-                'Zimmermann, N. E. R. and Jain, A.}, year={2017}}')
+                'Zimmermann, N. E. R. and Jain, A.}, year={2017}}']
 
     def implementors(self):
-        return (['Nils E. R. Zimmermann', 'Alireza Faghaninia'])
+        return ['Nils E. R. Zimmermann', 'Alireza Faghaninia', 'Anubhav Jain']
 
+    @staticmethod
+    def from_preset(preset, **kwargs):
 
-def get_order_parameter_stats(
-        struct, pneighs=None, convert_none_to_zero=True, delta_op=0.01,
-        ignore_op_types=None, bond_angles=None):
-    """
-    Determine the order parameter statistics accumulated across all sites
-    in Structure object struct using the get_order_parameters function.
+        if preset == "OPSiteFingerprint":
+            return SiteStatsFingerprint(OPSiteFingerprint(), **kwargs)
 
-    Args:
-        struct (Structure): input structure.
-        pneighs (dict): specification and parameters of
-                neighbor-finding approach (see
-                get_neighbors_of_site_with_index function
-                for more details).
-        convert_none_to_zero (bool): flag indicating whether or not
-                to convert None values in LSOPs to zero (cf.,
-                get_order_parameters function).
-        delta_op (float): bin size of histogram that is computed
-                in order to identify peak locations.
-        ignore_op_types ([str]): list of OP types to be ignored in
-                output dictionary (e.g., ["cn", "bent"]). Default (None)
-                will consider all OPs.
+        elif preset == "CrystalSiteFingerprint_cn":
+            return SiteStatsFingerprint(
+                CrystalSiteFingerprint.from_preset("cn", cation_anion=False),
+                **kwargs)
 
-    Returns: ({}) dictionary, the keys of which represent
-            the order parameter type (e.g., "bent5", "tet", "sq_pyr")
-            and the values of which are dictionaries carring the
-            statistics ("min", "max", "mean", "std", "peak1", "peak2").
-    """
-    opstats = {}
-    optypes = ["cn", "lin"]
-    bond_angles = bond_angles or [45, 90, 135]
-    for i in bond_angles:
-        optypes.append("bent{}".format(i))
-    for t in ["tet", "oct", "bcc", "q2", "q4", "q6",
-              "reg_tri", "sq", "sq_pyr", "tri_bipyr"]:
-        optypes.append(t)
-    opvals = SitesOrderParameters(pneighs=pneighs, bond_angles=bond_angles).\
-            featurize(struct)
-    for i, opstype in enumerate(opvals):
-        if ignore_op_types is not None:
-            if optypes[i] in ignore_op_types or \
-                    ("bent" in ignore_op_types and i > 1 and i < 36):
-                continue
-        ops_hist = {}
-        for op in opstype:
-            b = round(op / delta_op) * delta_op
-            if b in ops_hist.keys():
-                ops_hist[b] += 1
-            else:
-                ops_hist[b] = 1
-        ops = list(ops_hist.keys())
-        hist = list(ops_hist.values())
-        sorted_hist = sorted(hist, reverse=True)
-        if len(sorted_hist) > 1:
-            max1_hist, max2_hist = sorted_hist[0], sorted_hist[1]
-        elif len(sorted_hist) > 0:
-            max1_hist, max2_hist = sorted_hist[0], sorted_hist[0]
+        elif preset == "CrystalSiteFingerprint_cn_cation_anion":
+            return SiteStatsFingerprint(
+                CrystalSiteFingerprint.from_preset("cn", cation_anion=True),
+                **kwargs)
+
+        elif preset == "CrystalSiteFingerprint_ops":
+            return SiteStatsFingerprint(
+                CrystalSiteFingerprint.from_preset("ops", cation_anion=False),
+                **kwargs)
+
+        elif preset == "CrystalSiteFingerprint_ops_cation_anion":
+            return SiteStatsFingerprint(
+                CrystalSiteFingerprint.from_preset("ops", cation_anion=True),
+                **kwargs)
+
         else:
-            raise RuntimeError("Could not compute OP histogram.")
-        max1_idx = hist.index(max1_hist)
-        max2_idx = hist.index(max2_hist)
-        opstats[optypes[i]] = {
-            "min": min(opstype),
-            "max": max(opstype),
-            "mean": np.mean(np.array(opstype)),
-            "std": np.std(np.array(opstype)),
-            "peak1": ops[max1_idx],
-            "peak2": ops[max2_idx]}
-    return opstats
+            # One of the various Coordination Number presets:
+            # MinimumVIRENN, MinimumDistanceNN, JMolNN, VoronoiNN, etc.
+            try:
+                return SiteStatsFingerprint(
+                    CoordinationNumber.from_preset(preset), **kwargs)
+            except:
+                pass
+
+        raise ValueError("Unrecognized preset!")
+
+    # TODO: @nisse3000, move this function elsewhere. Probably the PropertyStats
+    # packages which is responsible for turning higher-dimensional data into
+    # lower dimensional data
+    @staticmethod
+    def n_numerical_modes(data_lst, n=2, dl=0.1):
+        """
+        Returns the n first modes of a data set that are obtained with
+            a finite bin size for the underlying frequency distribution.
+        Args:
+            data_lst ([float]): data values.
+            n (integer): number of most frequent elements to be determined.
+            dl (float): bin size of underlying (coarsened) distribution.
+        Returns:
+            ([float]): first n most frequent entries (or nan if not found).
+        """
+        if len(set(data_lst)) == 1:
+            return [data_lst[0]] + [float('NaN') for _ in range(n - 1)]
+        hist, bins = np.histogram(data_lst, bins=np.arange(
+            min(data_lst), max(data_lst), dl), density=False)
+        modes = list(bins[np.argsort(hist)[-n:]][::-1])
+        return modes + [float('NaN') for _ in range(n - len(modes))]
 
 
-def get_order_parameter_feature_vectors_difference(
-        struct1, struct2, pneighs=None, convert_none_to_zero=True,
-        delta_op=0.01, ignore_op_types=None):
+# TODO: @nisse3000, move this function elsewhere
+def get_op_stats_vector_diff(s1, s2, max_dr=0.2, ddr=0.01, ddist=0.01):
     """
     Determine the difference vector between two order parameter-statistics
     feature vector resulting from two input structures.
 
     Args:
-        struct1 (Structure): first input structure.
-        struct2 (Structure): second input structure.
-        pneighs (dict): specification and parameters of
-                neighbor-finding approach (see
-                get_neighbors_of_site_with_index function
-                for more details).
-        convert_none_to_zero (bool): flag indicating whether or not
-                to convert None values in OPs to zero (cf.,
-                get_order_parameters function).
-        delta_op (float): bin size of histogram that is computed
-                in order to identify peak locations (cf.,
-                get_order_parameters_stats function).
-        ignore_op_types ([str]): list of OP types to be ignored in
-                output dictionary (cf., get_order_parameters_stats
-                function).
+        s1 (Structure): first input structure.
+        s2 (Structure): second input structure.
+        max_dr (float): maximum neighbor-finding parameter to be tested.
+        ddr (float): step size for increasing neighbor-finding parameter.
+        ddist (float): bin size for histogramming distances of varying dr.
 
-    Returns: ([float]) difference vector between order
-                parameter-statistics feature vectors obtained from the
-                two input structures (structure 1 - structure 2).
+    Returns: (float, [float]) optimal neighbor-finding parameter
+        and difference vector between order
+        parameter-statistics feature vectors obtained from the
+        two input structures (s1 - s2).
     """
-    d1 = get_order_parameter_stats(
-        struct1, pneighs=pneighs,
-        convert_none_to_zero=convert_none_to_zero,
-        delta_op=delta_op,
-        ignore_op_types=ignore_op_types)
-    d2 = get_order_parameter_stats(
-        struct2, pneighs=pneighs,
-        convert_none_to_zero=convert_none_to_zero,
-        delta_op=delta_op,
-        ignore_op_types=ignore_op_types)
-    v = []
-    for optype, stats in d1.items():
-        for stattype, val in stats.items():
-            v.append(val - d2[optype][stattype])
-    return np.array(v)
+    # Compute OP stats vector distances for varying neigh-find paras.
+    dr = []
+    dist = []
+    delta = []
+    nbins = int(max_dr / ddr) + 1
+    for i in range(nbins):
+        dr.append(float(i + 1) * ddr)
+        opsf = SiteStatsFingerprint(site_featurizer=OPSiteFingerprint(dr=dr[i]))
+        delta.append(np.array(
+            opsf.featurize(s1)) - np.array(opsf.featurize(s2)))
+        dist.append(np.linalg.norm(delta[i]))
+
+    # Compute distance histogram, determine peak, and location
+    # of smallest dr with peak value.
+    nbins = int(max(dist) / ddist) + 1
+    hist, bin_edges = np.histogram(
+        dist, bins=[float(i) * ddist for i in range(nbins)],
+        normed=False, weights=None, density=False)
+    idx = list(hist).index(max(hist))
+    dist_peak = 0.5 * (bin_edges[idx] + bin_edges[idx + 1])
+    idx = -1
+    for i, d in enumerate(dist):
+        if fabs(d - dist_peak) <= ddist:
+            idx = i
+            break
+
+    return dr[idx], delta[idx]
 
 
-def get_neighbors_of_site_with_index_future(struct, n, approach="min_dist", \
-                                            delta=0.1, cutoff=10.0):
+class EwaldEnergy(BaseFeaturizer):
+    """Compute the energy from Coulombic interactions
+
+    Note: The energy is computed using _charges already defined for the structure_.
+
+    Features:
+        ewald_energy - Coulomb interaction energy of the structure"""
+
+    def __init__(self, accuracy=None):
+        """
+        Args:
+            accuracy (int): Accuracy of Ewald summation, number of decimal places
+        """
+        self.accuracy = accuracy
+
+    def featurize(self, strc):
+        """
+
+        Args:
+             (Structure) - Structure being analyzed
+        Returns:
+            ([float]) - Electrostatic energy of the structure
+        """
+        # Compute the total energy
+        ewald = EwaldSummation(strc, acc_factor=self.accuracy)
+        return [ewald.total_energy]
+
+    def feature_labels(self):
+        return ["ewald_energy"]
+
+    def implementors(self):
+        return ["Logan Ward"]
+
+    def citations(self):
+        return ["@Article{Ewald1921,"
+                "author = {Ewald, P. P.},"
+                "doi = {10.1002/andp.19213690304},"
+                "issn = {00033804},"
+                "journal = {Annalen der Physik},"
+                "number = {3},"
+                "pages = {253--287},"
+                "title = {{Die Berechnung optischer und elektrostatischer Gitterpotentiale}},"
+                "url = {http://doi.wiley.com/10.1002/andp.19213690304},"
+                "volume = {369},"
+                "year = {1921}"
+                "}"]
+
+
+class BagofBonds(BaseFeaturizer):
     """
-    Returns the neighbors of a given site using a specific neighbor-finding
-    method.
+    Compute the number of each kind of bond in a structure, as a fraction of
+    the total number of bonds, based on NearestNeighbors.
+    For example, in a structure with 2 Li-O bonds and 3 Li-P bonds:
+
+    Li-0: 0.4
+    Li-P: 0.6
+
+    For dataframes containing structures with various compositions, a unified
+    dataframe is returned which has the collection of bond types gathered
+    from all structures as columns.
 
     Args:
-        struct (Structure): input structure.
-        n (int): index of site in Structure object for which motif type
-                is to be determined.
-        approach (str): type of neighbor-finding approach, where
-              "min_dist" will use the MinimumDistanceNN class,
-              "voronoi" the VoronoiNN class, "min_OKeeffe" the
-              MinimumOKeeffe class, and "min_VIRE" the MinimumVIRENN class.
-        delta (float): tolerance involved in neighbor finding.
-        cutoff (float): (large) radius to find tentative neighbors.
-
-    Returns: neighbor sites.
+        nn (NearestNeighbors): A Pymatgen nearest neighbors derived object.
+        bbv (float): The 'bad bond values', values substituted for
+            structure-bond combinations which can not physically exist, but
+            exist in the unified dataframe. For example, if a dataframe contains
+            structures of BaLiP and BaTiO3, determines the value to place in
+            the Li-P column for the BaTiO3 row; by default, is None, resulting
+            in NaN.
     """
 
-    warnings.warn('This function will go into Pymatgen very soon.')
+    def __init__(self, nn, bbv=None):
+        self.nn = nn
+        self.bbv = bbv
 
-    if approach == "min_dist":
-        return MinimumDistanceNN(tol=delta, cutoff=cutoff).get_nn(
-            struct, n)
-    elif approach == "voronoi":
-        return VoronoiNN(tol=delta, cutoff=cutoff).get_nn(
-            struct, n)
-    elif approach == "min_OKeeffe":
-        return MinimumOKeeffeNN(tol=delta, cutoff=cutoff).get_nn(
-            struct, n)
-    elif approach == "min_VIRE":
-        return MinimumVIRENN(tol=delta, cutoff=cutoff).get_nn(
-            struct, n)
-    else:
-        raise RuntimeError("unsupported neighbor-finding method ({}).".format(
-            approach))
+    @staticmethod
+    def from_preset(preset):
+        """
+        Use one of the standard instances of a given NearNeighbor class.
 
+        Args:
+            preset (str): preset type ("VoronoiNN", "JMolNN",
+            "MiniumDistanceNN", "MinimumOKeeffeNN", or "MinimumVIRENN").
 
-def get_neighbors_of_site_with_index(struct, n, p=None):
-    """
-    Determine the neighbors around the site that has index n in the input
-    Structure object struct, given the approach defined by parameters
-    p.  All supported neighbor-finding approaches and listed and
-    explained in the following.  All approaches start by creating a
-    tentative list of neighbors using a large cutoff radius defined in
-    parameter dictionary p via key "cutoff".
-    "min_dist": find nearest neighbor and its distance d_nn; consider all
-            neighbors which are within a distance of d_nn * (1 + delta),
-            where delta is an additional parameter provided in the
-            dictionary p via key "delta".
-    "scaled_VIRE": compute the radii, r_i, of all sites on the basis of
-            the valence-ionic radius evaluator (VIRE); consider all
-            neighbors for which the distance to the central site is less
-            than the sum of the radii multiplied by an a priori chosen
-            parameter, delta,
-            (i.e., dist < delta * (r_central + r_neighbor)).
-    "min_relative_VIRE": same approach as "min_dist", except that we
-            use relative distances (i.e., distances divided by the sum of the
-            atom radii from VIRE).
-    "min_relative_OKeeffe": same approach as "min_relative_VIRE", except
-            that we use the bond valence parameters from O'Keeffe's bond valence
-            method (J. Am. Chem. Soc. 1991, 3226-3229) to calculate
-            relative distances.
-    Args:
-        struct (Structure): input structure.
-        n (int): index of site in Structure object for which
-                neighbors are to be determined.
-        p (dict): specification (via "approach" key; default is "min_dist")
-                and parameters of neighbor-finding approach.
-                Default cutoff radius is 6 Angstrom (key: "cutoff").
-                Other default parameters are as follows.
-                min_dist: "delta": 0.15;
-                min_relative_OKeeffe: "delta": 0.05;
-                min_relative_VIRE: "delta": 0.05;
-                scaled_VIRE: "delta": 2.
-    Returns: ([site]) list of sites that are considered to be nearest
-            neighbors to site with index n in Structure object struct.
-    """
-    warnings.warn(
-        'This function will be removed as soon as the equivalent function in Pymatgen works with the new near neighbor-finding classes.')
+        Returns:
+            CoordinationNumber from a preset.
+        """
+        if preset == "VoronoiNN":
+            return BagofBonds(VoronoiNN())
+        elif preset == "JMolNN":
+            return BagofBonds(JMolNN())
+        elif preset == "MinimumDistanceNN":
+            return BagofBonds(MinimumDistanceNN())
+        elif preset == "MinimumOKeeffeNN":
+            return BagofBonds(MinimumOKeeffeNN())
+        elif preset == "MinimumVIRENN":
+            return BagofBonds(MinimumVIRENN())
+        else:
+            raise RuntimeError('Unknown preset.')
 
-    sites = []
-    if p is None:
-        p = {"approach": "min_dist", "delta": 0.1,
-             "cutoff": 6}
+    def featurize_dataframe(self, df, col_id, ignore_errors=False, inplace=True):
+        """
+        Compute features for all entries contained in input dataframe.
+        Necessary for returning the correct unified dataframe.
 
-    if p["approach"] not in [
-        "min_relative_OKeeffe", "min_dist", "min_relative_VIRE", \
-            "scaled_VIRE"]:
-        raise RuntimeError("Unsupported neighbor-finding approach"
-                           " (\"{}\")".format(p["approach"]))
+        Args:
+            df (Pandas dataframe): Dataframe containing input data
+            col_id (str or [str]): The dataframe key corresponding to structures
 
-    if p["approach"] == "min_relative_OKeeffe" or p["approach"] == "min_dist":
-        neighs_dists = struct.get_neighbors(struct[n], p["cutoff"])
-        try:
-            eln = struct[n].specie.element
-        except:
-            eln = struct[n].species_string
-    elif p["approach"] == "scaled_VIRE" or p["approach"] == "min_relative_VIRE":
-        vire = ValenceIonicRadiusEvaluator(struct)
-        if np.linalg.norm(struct[n].coords - vire.structure[n].coords) > 1e-6:
-            raise RuntimeError("Mismatch between input structure and VIRE structure.")
-        neighs_dists = vire.structure.get_neighbors(vire.structure[n], p["cutoff"])
-        rn = vire.radii[vire.structure[n].species_string]
+        Returns:
+            (DataFrame) BagofBonds-featurized dataframe
+        """
 
-    reldists_neighs = []
-    for neigh, dist in neighs_dists:
-        if p["approach"] == "scaled_VIRE":
-            dscale = p["delta"] * (vire.radii[neigh.species_string] + rn)
-            if dist < dscale:
-                sites.append(neigh)
-        elif p["approach"] == "min_relative_VIRE":
-            reldists_neighs.append([dist / (
-                vire.radii[neigh.species_string] + rn), neigh])
-        elif p["approach"] == "min_relative_OKeeffe":
-            try:
-                el2 = neigh.specie.element
-            except:
-                el2 = neigh.species_string
-            reldists_neighs.append([dist / get_okeeffe_distance_prediction(
-                eln, el2), neigh])
-        elif p["approach"] == "min_dist":
-            reldists_neighs.append([dist, neigh])
+        # unified_bonds attribute only lives if dataframe is being featurized.
+        self.unified_bonds = self.enumerate_all_bonds(df[col_id])
+        df = super(BagofBonds, self).featurize_dataframe(df, col_id,
+                                                         ignore_errors=ignore_errors,
+                                                         inplace=inplace)
+        delattr(self, 'unified_bonds')
+        return df
 
-    if p["approach"] == "min_relative_VIRE" or \
-                    p["approach"] == "min_relative_OKeeffe" or \
-                    p["approach"] == "min_dist":
-        min_reldist = min([reldist for reldist, neigh in reldists_neighs])
-        for reldist, neigh in reldists_neighs:
-            if reldist / min_reldist < 1.0 + p["delta"]:
-                sites.append(neigh)
+    @staticmethod
+    def enumerate_bonds(s):
+        """
+        Lists out all the bond possibilities in a single structure.
 
-    return sites
+        Args:
+            s (Structure): A pymatgen structure
+
+        Returns:
+            A list of bond types in 'Li-O' form, where the order of the
+            elements in each bond type is alphabetic.
+        """
+        if isinstance(s, dict):
+            s = Structure.from_dict(s)
+        els = s.composition.elements
+        het_bonds = list(itertools.combinations(els, 2))
+        het_bonds = [tuple(sorted([str(i) for i in j])) for j in het_bonds]
+        hom_bonds = [(str(el), str(el)) for el in els]
+        bond_types = [k[0] + '-' + k[1] for k in het_bonds + hom_bonds]
+        return sorted(bond_types)
+
+    def enumerate_all_bonds(self, structures):
+        """
+        Identify all the unique, possible bonds types of all structures present,
+        and create the 'unified' bonds list.
+
+        Args:
+             structures (list/ndarray): List of pymatgen Structures
+
+        Returns:
+            A tuple of unique, possible bond types for an entire list of
+            structures. This tuple is used to form the unified feature labels.
+        """
+        bond_types = []
+        for s in structures:
+            bts = self.enumerate_bonds(s)
+            for bt in bts:
+                if bt not in bond_types:
+                    bond_types.append(bt)
+        return tuple(sorted(bond_types))
+
+    def featurize(self, s):
+        """
+        Quantify the fractions of each bond type in a structure.
+
+        For collections of structures, bonds types which are not found in a
+        particular structure (e.g., Li-P in BaTiO3) are represented as NaN.
+
+        Args:
+            s (Structure): A pymatgen structure object
+        """
+
+        if isinstance(s, dict):
+            s = Structure.from_dict(s)
+
+        bond_types = tuple(self.enumerate_bonds(s))
+        bonds = {k: 0.0 for k in bond_types}
+
+        for i, _ in enumerate(s.sites):
+            nearest = self.nn.get_nn(s, i)
+            origin = s.sites[i].specie
+
+            for neigh in nearest:
+                btup = tuple(sorted([str(origin), str(neigh.specie)]))
+                b = btup[0] + '-' + btup[1]
+                bonds[b] += 1.0
+
+        # If featurize is being called from a dataframe or featurize_many,
+        # a comprehensize 'unified' bond list is created. The following code
+        # places nan in all bad bond values, where bonds are not physically
+        # possible.
+        if hasattr(self, 'unified_bonds'):
+            for b in self.unified_bonds:
+                if b not in bond_types:
+                    bonds[b] = float("nan") if self.bbv is None else self.bbv
+            ordered_bonds = self.unified_bonds
+        else:
+            self.local_bonds = bond_types
+            ordered_bonds = self.local_bonds
+
+        tot_bonds = sum(v for v in bonds.values() if not np.isnan(v))
+        return [bonds[b] / tot_bonds for b in ordered_bonds]
+
+    def feature_labels(self):
+        """
+        If an entire dataframe is featurized, returns all unique possible
+        bonds gathered across all structures.
+
+        If only .featurize called, returns all bond labels for the last structure
+        featurized.
+        """
+        if hasattr(self, 'unified_bonds'):
+            labels = self.unified_bonds
+        else:
+            labels = self.local_bonds
+        return [b + " bond frac." for b in labels]
+
+    def implementors(self):
+        return ["Alex Dunn"]
+
+    def citations(self):
+        return ["@article{doi:10.1021/acs.jpclett.5b00831, "
+                "author = {Hansen, Katja and Biegler, "
+                "Franziska and Ramakrishnan, Raghunathan and Pronobis, Wiktor"
+                "and von Lilienfeld, O. Anatole and Muller, Klaus-Robert and"
+                "Tkatchenko, Alexandre},"
+                "title = {Machine Learning Predictions of Molecular Properties: "
+                "Accurate Many-Body Potentials and Nonlocality in Chemical Space},"
+                "journal = {The Journal of Physical Chemistry Letters},"
+                "volume = {6},"
+                "number = {12},"
+                "pages = {2326-2331},"
+                "year = {2015},"
+                "doi = {10.1021/acs.jpclett.5b00831}, "
+                "note ={PMID: 26113956},"
+                "URL = {http://dx.doi.org/10.1021/acs.jpclett.5b00831}"
+                "}"]

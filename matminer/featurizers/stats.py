@@ -1,17 +1,38 @@
+from __future__ import division
+
 """
-File containing general methods for computing property statistics
+General methods for computing property statistics from a list of values
 """
+
 import numpy as np
 from scipy import stats
 
 from six import string_types
 
 
-# TODO: some of this needs a bit more cleanup. The kernel methods (requiring two lists) should
-# probably go in a different class. Some of the method signatures are consistent, others aren't.
-# Just needs a 15 minute cleanup check. -computron
-
 class PropertyStats(object):
+    """This class contains statistical operations that are commonly employed
+    when computing features.
+
+    The primary way for interacting with this class is to call the
+    ``calc_stat`` function, which takes the name of the statistic you would
+    like to compute and the weights/values of data to be assessed. For example,
+    computing the mean of a list looks like::
+
+        x = [1, 2, 3]
+        PropertyStats.calc_stat(x, 'mean') # Result is 2
+        PropertyStats.calc_stat(x, 'mean', weights=[0, 0, 1]) # Result is 3
+
+    Some of the statistics functions take options (e.g., Holder means). You can
+    pass them to the the statistics functions by adding them after the name and
+    two colons. For example, the 0th Holder mean would be::
+
+        PropertyStats.calc_stat(x, 'holder_mean::0')
+
+    You can, of course, call the statistical functions directly. All take at
+    least two arguments.  The first is the data being assessed and the second,
+    optional, argument is the weights.
+    """
 
     @staticmethod
     def calc_stat(data_lst, stat, weights=None):
@@ -21,102 +42,148 @@ class PropertyStats(object):
         Args:
             data_lst (list of floats): list of values
             stat (str) - Name of property to be compute. If there are arguments to the statistics function, these
-             should be added after the name and separated by two underscores. For example, the 2nd Holder mean would
-             be "holder_mean__2"
+             should be added after the name and separated by two colons. For example, the 2nd Holder mean would
+             be "holder_mean::2"
             weights (list of floats): (Optional) weights for each element in data_lst
-        Reteurn:
+        Returns:
             float - Desired statistic
         """
-        statistics = stat.split("__")
+        statistics = stat.split("::")
         return getattr(PropertyStats, statistics[0])(data_lst, weights, *statistics[1:])
 
     @staticmethod
     def minimum(data_lst, weights=None):
-        """
-        Minimum value in a list of element data
+        """Minimum value in a list
+
         Args:
-            data_lst (list of floats): Value of a property for each atom in a compound
-            weights (ignored)
+            data_lst (list of floats): List of values to be assessed
+            weights: (ignored)
         Returns: 
             minimum value
         """
-        return min(data_lst) if float("nan") not in data_lst else float("nan")
+        return min(data_lst) if not np.any(np.isnan(data_lst)) else float("nan")
 
     @staticmethod
     def maximum(data_lst, weights=None):
-        """
-        Maximum value in a list of element data
+        """Maximum value in a list
+
         Args:
-            data_lst (list of floats): Value of a property for each atom in a compound
-            weights (ignored)
+            data_lst (list of floats): List of values to be assessed
+            weights: (ignored)
         Returns: 
             maximum value
         """
-        return max(data_lst) if float("nan") not in data_lst else float("nan")
+        return max(data_lst) if not np.any(np.isnan(data_lst)) else float("nan")
 
     @staticmethod
     def range(data_lst, weights=None):
-        """
-        Range of a list of element data
+        """Range of a list
+
         Args:
-            data_lst (list of floats): Value of a property for each atom in a compound
-            weights (ignored)
+            data_lst (list of floats): List of values to be assessed
+            weights: (ignored)
         Returns: 
             range
         """
-        return (max(data_lst) - min(data_lst)) if float("nan") not in data_lst \
+        return (max(data_lst) - min(data_lst)) if not np.any(np.isnan(data_lst)) \
             else float("nan")
 
     @staticmethod
-    def mean(data_lst, weights=None, **kwargs):
-        """
-        Mean of list of element data
+    def mean(data_lst, weights=None):
+        """Arithmetic mean of list
+
         Args:
-            data_lst (list of floats): Value of a property for each atom or element in a compound
+            data_lst (list of floats): List of values to be assessed
             weights (list of floats): Weights for each value
         Returns: 
             mean value
         """
-        if weights is None:
-            return np.average(data_lst)
-        else:
-            return np.dot(data_lst, weights) / sum(weights)
+        return np.average(data_lst, weights=weights)
+
+    @staticmethod
+    def inverse_mean(data_lst, weights=None):
+        """Mean of the inverse of each entry
+
+        Args:
+            data_lst (list of floats): List of values to be assessed
+            weights (list of floats): Weights for each value
+        Returns:
+            inverse mean
+        """
+        return PropertyStats.mean([1.0 / x for x in data_lst], weights=weights)
 
     @staticmethod
     def avg_dev(data_lst, weights=None):
-        """
-        Average absolute deviation of list of element data
+        """Mean absolute deviation of list of element data.
+
+        This is computed by first calculating the mean of the list,
+        and then computing the average absolute difference between each value
+        and the mean.
+
         Args:
-            data_lst (list of floats): Value of a property for each atom in a compound
-            weights (list of floats): Atomic fractions
+            data_lst (list of floats): List of values to be assessed
+            weights (list of floats): Weights for each value
         Returns: 
-            average absolute deviation
+            mean absolute deviation
         """
         mean = PropertyStats.mean(data_lst, weights)
         return np.average(np.abs(np.subtract(data_lst, mean)), weights=weights)
 
     @staticmethod
     def std_dev(data_lst, weights=None):
-        """
-        Standard deviation of a list of element data
+        """Standard deviation of a list of element data
+
         Args:
-            data_lst (list of floats): Value of a property for each atom in a compound
-            weights (list of floats): Atomic fractions
+            data_lst (list of floats): List of values to be assessed
+            weights (list of floats): Weights for each value
+        Returns:
+            standard deviation
         """
+        # Special case: Only one entry
+        if len(data_lst) == 1:
+            # This prevents numerical issues in the weighted std_dev
+            return 0
+
         if weights is None:
             return np.std(data_lst)
         else:
-            dev = np.subtract(data_lst, PropertyStats.mean(data_lst, weights=weights))**2
-            return np.sqrt(PropertyStats.mean(dev, weights=weights))
+            beta = np.sum(weights) / (np.sum(weights) ** 2 - np.sum(np.power(weights, 2)))
+            dev = np.power(np.subtract(data_lst, PropertyStats.mean(data_lst, weights=weights)), 2)
+            return np.sqrt(beta * np.dot(dev, weights))
+
+    @staticmethod
+    def geom_std_dev(data_lst, weights=None):
+        """
+        Geometric standard deviation
+
+        Args:
+            data_lst (list of floats): List of values to be assessed
+            weights (list of floats): Weights for each value
+        Returns:
+            geometric standard deviation
+        """
+
+        # Make fake weights, if none are provided
+        if weights is None:
+            weights = np.ones_like(data_lst)
+
+        # Compute the geometric std dev
+        mean = PropertyStats.holder_mean(data_lst, weights, 0)
+        beta = np.sum(weights) / (np.sum(weights) ** 2 - np.sum(np.power(weights, 2)))
+        dev = np.log(np.true_divide(data_lst, mean))
+        return np.sqrt(np.exp(beta * np.dot(weights, np.power(dev, 2))))
 
     @staticmethod
     def mode(data_lst, weights=None):
-        """
-        Mode of a list of element data. If multiple elements occur equally-frequently (or same weight, if weights are
-        provided), this function will return the average of those values
+        """Mode of a list of data.
+
+        If multiple elements occur equally-frequently (or same weight, if
+        weights are provided), this function will return the minimum of those
+        values.
+
         Args:
-            data_lst (list of floats): Value of a property for each atom in a compound
-            weights (list of floats): Atomic fractions
+            data_lst (list of floats): List of values to be assessed
+            weights (list of floats): Weights for each value
         Returns: 
             mode
         """
@@ -130,25 +197,6 @@ class PropertyStats(object):
 
             # Return the minimum of the most-frequent entries
             return data_lst[most_freq].min()
-
-    @staticmethod
-    def n_numerical_modes(data_lst, n, dl=0.1):
-        """
-        Returns the n first modes of a data set that are obtained with
-            a finite bin size for the underlying frequency distribution.
-        Args:
-            data_lst ([float]): data values.
-            n (integer): number of most frequent elements to be determined.
-            dl (float): bin size of underlying (coarsened) distribution.
-        Returns:
-            ([float]): first n most frequent entries (or nan if not found).
-        """
-        if len(set(data_lst)) == 1:
-            return [data_lst[0]] + [float('NaN') for _ in range(n-1)]
-        hist, bins = np.histogram(data_lst, bins=np.arange(
-                min(data_lst), max(data_lst), dl), density=False)
-        modes = list(bins[np.argsort(hist)[-n:]][::-1])
-        return modes + [float('NaN') for _ in range(n-len(modes))]
 
     @staticmethod
     def holder_mean(data_lst, weights=None, power=1):
@@ -175,7 +223,7 @@ class PropertyStats(object):
 
             # If power=0, return geometric mean
             if power == 0:
-                return np.product(np.power(data_lst, np.divide(weights, np.sum(weights))))
+                return np.product(np.power(data_lst, np.true_divide(weights, np.sum(weights))))
             else:
                 return np.power(np.sum(np.multiply(weights, np.power(data_lst, power))) / alpha, 1.0/power)
 
@@ -203,27 +251,6 @@ class PropertyStats(object):
 
     @staticmethod
     def flatten(data_lst):
-        """oxi
-        Returns a flattened copy of data_lst-as a numpy array
+        """Returns a flattened copy of data_lst-as a numpy array
         """
         return np.array(data_lst).flatten()
-
-    @staticmethod
-    def laplacian_kernel(arr0, arr1, SIGMA):
-        """
-        Returns a Laplacian kernel of the two arrays
-        for use in KRR or other regressions using the
-        kernel trick.
-        """
-        diff = arr0 - arr1
-        return np.exp(-np.linalg.norm(diff.A1, ord=1) / SIGMA)
-
-    @staticmethod
-    def gaussian_kernel(arr0, arr1, SIGMA):
-        """
-        Returns a Gaussian kernel of the two arrays
-        for use in KRR or other regressions using the
-        kernel trick.
-        """
-        diff = arr0 - arr1
-        return np.exp(-np.linalg.norm(diff.A1, ord=2)**2 / 2 / SIGMA**2)

@@ -1,66 +1,59 @@
-matminer.featurizers package
-============================
-
-Subpackages
------------
-
-.. toctree::
-
-    matminer.featurizers.data_files
+matminer\.featurizers package
+=============================
 
 Submodules
 ----------
 
-matminer.featurizers.bandstructure module
------------------------------------------
+matminer\.featurizers\.bandstructure module
+-------------------------------------------
 
 .. automodule:: matminer.featurizers.bandstructure
     :members:
     :undoc-members:
     :show-inheritance:
 
-matminer.featurizers.base module
---------------------------------
+matminer\.featurizers\.base module
+----------------------------------
 
 .. automodule:: matminer.featurizers.base
     :members:
     :undoc-members:
     :show-inheritance:
 
-matminer.featurizers.composition module
----------------------------------------
+matminer\.featurizers\.composition module
+-----------------------------------------
 
 .. automodule:: matminer.featurizers.composition
     :members:
     :undoc-members:
     :show-inheritance:
 
-matminer.featurizers.data module
---------------------------------
+matminer\.featurizers\.dos module
+---------------------------------
 
-.. automodule:: matminer.featurizers.data
+.. automodule:: matminer.featurizers.dos
     :members:
     :undoc-members:
     :show-inheritance:
 
-matminer.featurizers.site module
---------------------------------
+matminer\.featurizers\.site module
+----------------------------------
 
 .. automodule:: matminer.featurizers.site
     :members:
     :undoc-members:
     :show-inheritance:
 
-matminer.featurizers.stats module
----------------------------------
+matminer\.featurizers\.stats module
+-----------------------------------
 
 .. automodule:: matminer.featurizers.stats
     :members:
     :undoc-members:
     :show-inheritance:
 
-matminer.featurizers.structure module
--------------------------------------
+matminer\.featurizers\.structure module
+---------------------------------------
 
 .. automodule:: matminer.featurizers.structure
     :members:
