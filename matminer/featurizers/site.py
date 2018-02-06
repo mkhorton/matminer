@@ -23,13 +23,14 @@ from matminer.featurizers.base import BaseFeaturizer
 from pymatgen.analysis.structure_analyzer import VoronoiAnalyzer
 from pymatgen.analysis.local_env import LocalStructOrderParas, \
     VoronoiNN, JMolNN, MinimumDistanceNN, MinimumOKeeffeNN, \
-    MinimumVIRENN
+    MinimumVIRENN, get_neighbors_of_site_with_index
 from pymatgen.analysis.ewald import EwaldSummation
 from pymatgen.analysis.chemenv.coordination_environments.coordination_geometry_finder \
     import LocalGeometryFinder
 from pymatgen.analysis.chemenv.coordination_environments.chemenv_strategies \
    import SimplestChemenvStrategy, MultiWeightsChemenvStrategy
 from pymatgen.analysis.chemenv.coordination_environments.structure_environments import LightStructureEnvironments
+from pymatgen.core.periodic_table import Specie, get_el_sp
 
 from matminer.featurizers.stats import PropertyStats
 
@@ -901,3 +902,303 @@ class CoordinationNumber(BaseFeaturizer):
 
     def implementors(self):
         return ['Nils E. R. Zimmermann']
+
+class JahnTellerActiveSite(BaseFeaturizer):
+    """
+    Calculates a heuristic as to whether a site could be Jahn-Teller active
+    or not. Requires an oxidation-state decorated structure.
+    If spin configuration is not known, but magnetic moments are supplied,
+    then spin configuration will be guessed from that. If magnetic moments
+    are not supplied, the spin configuration will be chosen with the strongest
+    J-T effect, so as to reduce false negatives.
+    """
+
+    spin_configs = {
+        "oct":
+            {  # key is number of d electrons
+                0: {"high": {"e_g": 0, "t_2g": 0}, "default": "high"},
+                1: {"high": {"e_g": 0, "t_2g": 1}, "default": "high"},  # weak J-T
+                2: {"high": {"e_g": 0, "t_2g": 2}, "default": "high"},  # weak
+                3: {"high": {"e_g": 0, "t_2g": 3}, "default": "high"},  # no J-T
+                4: {"high": {"e_g": 1, "t_2g": 3},
+                    "low": {"e_g": 0, "t_2g": 4}, "default": "high"},  # strong high, weak low
+                5: {"high": {"e_g": 2, "t_2g": 3},
+                    "low": {"e_g": 0, "t_2g": 5}, "default": "low"},  # no high, weak low
+                6: {"high": {"e_g": 2, "t_2g": 4},
+                    "low": {"e_g": 0, "t_2g": 6}, "default": "high"},  # weak high, no low
+                7: {"high": {"e_g": 2, "t_2g": 5},
+                    "low": {"e_g": 1, "t_2g": 6}, "default": "low"},  # weak high, strong low
+                8: {"high": {"e_g": 2, "t_2g": 6}, "default": "high"},  # no
+                9: {"high": {"e_g": 3, "t_2g": 6}, "default": "high"},  # strong
+                10: {"high": {"e_g": 4, "t_2g": 6}, "default": "high"}
+            },
+        "tet":
+            {  # no low spin observed experimentally in tetrahedral, all weak J-T
+                0: {"high": {"e": 0, "t_2": 0}, "default": "high"},
+                1: {"high": {"e": 1, "t_2": 0}, "default": "high"},
+                2: {"high": {"e": 2, "t_2": 0}, "default": "high"},
+                3: {"high": {"e": 2, "t_2": 1}, "default": "high"},
+                4: {"high": {"e": 2, "t_2": 2}, "default": "high"},
+                5: {"high": {"e": 2, "t_2": 3}, "default": "high"},
+                6: {"high": {"e": 3, "t_2": 3}, "default": "high"},
+                7: {"high": {"e": 4, "t_2": 3}, "default": "high"},
+                8: {"high": {"e": 4, "t_2": 4}, "default": "high"},
+                9: {"high": {"e": 4, "t_2": 5}, "default": "high"},
+                10: {"high": {"e": 4, "t_2": 6}, "default": "high"}
+            }
+    }
+
+    def featurize(self, structure, idx):
+        """
+        Feature is whether site is or could be Jahn-Teller active.
+
+        Args:
+            structure: oxi-state decorated Structure
+            idx (int): index of site
+
+        Returns (list): 'strong', 'weak', 'none' (not active) or 'unknown'
+
+        """
+        jahn_teller_site_analysis = self.jahn_teller_site_analysis(structure, idx)
+        return [jahn_teller_site_analysis['magnitude']]
+
+    def feature_labels(self):
+        return ['Jahn-Teller active site']
+
+    def citations(self):
+        return []
+
+    def implementors(self):
+        return ['Matthew Horton']
+
+    def jahn_teller_site_analysis(self, structure, idx, spin_state='default'):
+        """
+        Perform analysis of a given site as to whether that site is likely to
+        be Jahn-Teller active.
+
+        Args:
+            structure: oxi-state decorated Structure
+            idx (int): index of site
+            spin_state (str): 'high', 'low' or 'default' ('default' will try
+        to estimate spin config from magnetic moments if present or, if not,
+        will choose spin config with strongest J-T effect)
+
+        Returns (dict): summary of analysis for that site
+        """
+
+        site = structure[idx]
+
+        if getattr(site.specie, 'oxi_state', None) is None:
+            return {'magnitude': 'unknown',
+                    'reason': 'Oxidation state of site is not specified.'}
+
+        # get structural motif for site
+        op = OPSiteFingerprint()
+        op_site = op.featurize(structure, idx)
+
+        tet_idx = op.feature_labels().index('tet CN_4')
+        oct_idx = op.feature_labels().index('oct CN_6')
+
+        # threshold for motif to be considered present
+        # lower than you might expect since many J-T structures
+        # are significantly distorted
+        threshold = 0.45
+
+        if op_site[tet_idx] > op_site[oct_idx] \
+                and op_site[tet_idx] > threshold:
+            motif = 'tet'
+            motif_op = op_site[tet_idx]
+        elif op_site[oct_idx] > threshold:
+            motif = 'oct'
+            motif_op = op_site[oct_idx]
+        else:
+            return {'magnitude': 'none',
+                    'reason': 'Site is not in an octahedral or tetrahedral motif.'}
+
+        if spin_state == 'default' and 'magmom' in site.properties:
+            magmom = site.properties['magmom']
+            spin_state = self._estimate_spin_state(site.specie, motif, magmom)
+
+        magnitude = self._get_magnitude_of_effect_from_species(site.specie, spin_state, motif)
+
+        if magnitude != 'none' and magnitude != 'unknown':
+
+
+            ligands = get_neighbors_of_site_with_index(structure, idx)
+            ligand_bond_lengths = [ligand.distance(structure[idx]) for ligand in ligands]
+            ligands_species = list(set([str(ligand.specie) for ligand in ligands]))
+            ligand_bond_length_spread = max(ligand_bond_lengths) - min(ligand_bond_lengths)
+
+            def trim(f):
+                # avoid displaying unreasonable precision, hurts readability
+                return float("{:.4f}".format(f))
+
+            # to be Jahn-Teller active, all ligands have to be the same
+            if len(ligands_species) == 1:
+
+                summary = {
+                    'magnitude': magnitude,
+                    'motif': motif,
+                    'motif_order_parameter': trim(motif_op),  # estimate of confidence
+                    'given_spin_state': spin_state,
+                    'ligand': ligands_species[0],
+                    'ligand_bond_lengths': [trim(length) for length in ligand_bond_lengths],
+                    'ligand_bond_length_spread': trim(ligand_bond_length_spread)
+                }
+            else:
+                summary =  {
+                    'magnitude': 'Not active',
+                    'reason': 'Site symmetry is broken by presence of different ligands.'
+                }
+
+        else:
+
+            summary = {
+                'magnitude': magnitude,
+                'reason': 'Species on site is not a Jahn-Teller active species.'
+            }
+
+        return summary
+
+    @staticmethod
+    def _get_number_of_d_electrons(species):
+
+        # taken from get_crystal_field_spin
+        elec = species.full_electronic_structure
+        if len(elec) < 4 or elec[-1][1] != "s" or elec[-2][1] != "d":
+            raise AttributeError(
+                "Invalid element {} for crystal field calculation.".format(species.symbol))
+        nelectrons = int(elec[-1][2] + elec[-2][2] - species.oxi_state)
+        if nelectrons < 0 or nelectrons > 10:
+            raise AttributeError(
+                "Invalid oxidation state {} for element {}".format(species.oxi_state,
+                                                                   species.symbol))
+
+        return nelectrons
+
+    @staticmethod
+    def _get_magnitude_of_effect_from_species(species, spin_state, motif):
+        """
+
+
+        Args:
+            species: species string with oxidation state
+            spin_state: "high" or "low" or "unknwown"
+            motif: "oct" or "tet"
+
+        Returns (str): magnitude of Jahn-Teller effect
+
+        """
+
+        sp = get_el_sp(species)
+
+        # has to be Specie; we need to know the oxidation state
+        if isinstance(sp, Specie) and sp.element.is_transition_metal:
+
+            d_electrons = JahnTellerActiveSite._get_number_of_d_electrons(sp)
+            spin_configs = JahnTellerActiveSite.spin_configs
+
+            if motif in spin_configs:
+                if spin_state not in ('high', 'low'):
+                    spin_state = spin_configs[motif][d_electrons]['default']
+                spin_config = spin_configs[motif][d_electrons][spin_state]
+                print(spin_configs[motif][d_electrons])
+                magnitude = JahnTellerActiveSite.get_magnitude_of_effect_from_spin_config(motif,
+                                                                                          spin_config)
+            else:
+                magnitude = "none"
+        else:
+            magnitude = "unknown"
+
+        return magnitude
+
+    @staticmethod
+    def get_magnitude_of_effect_from_spin_config(motif, spin_config):
+        """
+        Roughly, magnitude of Jahn-Teller distortion will be:
+        * in octahedral environments, strong if e_g orbitals
+        unevenly occupied but weak if t_2g orbitals unevenly
+        occupied
+        * in tetrahedral environments always weaker
+
+        Args:
+            motif: "oct" or "tet"
+            spin_config: dict of 'e' (e_g) and 't' (t2_g)
+        with number of electrons in each state
+
+        Returns (str): "none", "weak" or "strong"
+
+        """
+        magnitude = "none"
+        if motif == "oct":
+            e_g = spin_config["e_g"]
+            t_2g = spin_config["t_2g"]
+            if (e_g % 2 != 0) or (t_2g % 3 != 0):
+                magnitude = "weak"
+                if e_g % 2 == 1:
+                    magnitude = "strong"
+        elif motif == "tet":
+            e = spin_config["e"]
+            t_2 = spin_config["t_2"]
+            if (e % 3 != 0) or (t_2 % 2 != 0):
+                magnitude = "weak"
+        return magnitude
+
+    @staticmethod
+    def _estimate_spin_state(species, motif, known_magmom):
+        """
+        Simple heuristic to estimate spin state. If magnetic moment
+        is sufficiently close to that predicted for a given spin state,
+        we assign it that state. If we only have data for one spin
+        state then that's the one we use (e.g. we assume all tetrahedral
+        complexes are high-spin, since this is typically the case).
+
+        Args:
+            species: str or Species
+            motif: "oct" or "tet"
+            known_magmom: known magnetic moment
+
+        Returns (str): "high", "low" or "unknown"
+
+        """
+        mu_so_high = JahnTellerActiveSite._mu_so(species, motif=motif, spin_state="high")
+        mu_so_low = JahnTellerActiveSite._mu_so(species, motif=motif, spin_state="low")
+        if mu_so_high == mu_so_low:
+            return "undefined"  # undefined or only one spin state possible
+        elif mu_so_high is None:
+            return "low"
+        elif mu_so_low is None:
+            return "high"
+        else:
+            diff = mu_so_high-mu_so_low
+            # WARNING! this heuristic has not been robustly tested or benchmarked
+            # using 'diff*0.25' as arbitrary measure, if known magmom is
+            # too far away from expected value, we don't try to classify it
+            if known_magmom > mu_so_high or abs(mu_so_high-known_magmom) < diff*0.25:
+                return "high"
+            elif known_magmom < mu_so_low or abs(mu_so_low-known_magmom) < diff*0.25:
+                return "low"
+            else:
+                return "unknown"
+
+    @staticmethod
+    def _mu_so(species, motif, spin_state):
+        """
+        Calculates the spin-only magnetic moment for a
+        given species. Only supports transition metals.
+
+        Args:
+            species: str or Species
+            motif: "oct" or "tet"
+            spin_state: "high" or "low"
+
+        Returns: spin-only magnetic moment in Bohr magnetons
+
+        """
+        try:
+            sp = get_el_sp(species)
+            n = sp.get_crystal_field_spin(coordination=motif, spin_config=spin_state)
+            # calculation spin-only magnetic moment for this number of unpaired spins
+            return np.sqrt(n(n+2))
+        except:
+            return None

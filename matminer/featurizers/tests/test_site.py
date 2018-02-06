@@ -2,13 +2,17 @@ from __future__ import unicode_literals, division, print_function
 
 import numpy as np
 import pandas as pd
+import os
+
 from pymatgen import Structure, Lattice
 from pymatgen.util.testing import PymatgenTest
 from pymatgen.analysis.local_env import VoronoiNN, JMolNN
 
 from matminer.featurizers.site import AGNIFingerprints, \
     OPSiteFingerprint, EwaldSiteEnergy, VoronoiIndex, ChemEnvSiteFingerprint, \
-    CoordinationNumber
+    CoordinationNumber, JahnTellerActiveSite
+
+test_dir = os.path.join(os.path.dirname(__file__))
 
 class FingerprintTests(PymatgenTest):
     def setUp(self):
@@ -208,6 +212,93 @@ class FingerprintTests(PymatgenTest):
         self.assertEqual(len(cnmvire.citations()), 2)
         self.assertEqual(len(cnmvire.implementors()), 1)
         self.assertEqual(cnmvire.implementors()[0], 'Nils E. R. Zimmermann')
+
+class JahnTellerTest(PymatgenTest):
+
+    def test_static_methods(self):
+        # 1 d-shell electron
+        m = JahnTellerActiveSite._get_magnitude_of_effect_from_species('Ti3+', '', 'oct')
+        self.assertEqual(m, "weak")
+
+        # 2 d-shell electrons
+        m = JahnTellerActiveSite._get_magnitude_of_effect_from_species('Ti2+', '', 'oct')
+        self.assertEqual(m, "weak")
+        m = JahnTellerActiveSite._get_magnitude_of_effect_from_species('V3+', '', 'oct')
+        self.assertEqual(m, "weak")
+
+        # 3
+        m = JahnTellerActiveSite._get_magnitude_of_effect_from_species('V2+', '', 'oct')
+        self.assertEqual(m, "none")
+        m = JahnTellerActiveSite._get_magnitude_of_effect_from_species('Cr3+', '', 'oct')
+        self.assertEqual(m, "none")
+
+        # 4
+        m = JahnTellerActiveSite._get_magnitude_of_effect_from_species('Cr2+', 'high', 'oct')
+        self.assertEqual(m, "strong")
+        m = JahnTellerActiveSite._get_magnitude_of_effect_from_species('Cr2+', 'low', 'oct')
+        self.assertEqual(m, "weak")
+        m = JahnTellerActiveSite._get_magnitude_of_effect_from_species('Mn3+', 'high', 'oct')
+        self.assertEqual(m, "strong")
+        m = JahnTellerActiveSite._get_magnitude_of_effect_from_species('Mn3+', 'low', 'oct')
+        self.assertEqual(m, "weak")
+
+        # 5
+        m = JahnTellerActiveSite._get_magnitude_of_effect_from_species('Mn2+', 'high', 'oct')
+        self.assertEqual(m, "none")
+        m = JahnTellerActiveSite._get_magnitude_of_effect_from_species('Mn2+', 'low', 'oct')
+        self.assertEqual(m, "weak")
+        m = JahnTellerActiveSite._get_magnitude_of_effect_from_species('Fe3+', 'high', 'oct')
+        self.assertEqual(m, "none")
+        m = JahnTellerActiveSite._get_magnitude_of_effect_from_species('Fe3+', 'low', 'oct')
+        self.assertEqual(m, "weak")
+
+        # 6
+        m = JahnTellerActiveSite._get_magnitude_of_effect_from_species('Fe2+', 'high', 'oct')
+        self.assertEqual(m, "weak")
+        m = JahnTellerActiveSite._get_magnitude_of_effect_from_species('Fe2+', 'low', 'oct')
+        self.assertEqual(m, "none")
+        m = JahnTellerActiveSite._get_magnitude_of_effect_from_species('Co3+', 'high', 'oct')
+        self.assertEqual(m, "weak")
+        m = JahnTellerActiveSite._get_magnitude_of_effect_from_species('Co3+', 'low', 'oct')
+        self.assertEqual(m, "none")
+
+        # 7
+        m = JahnTellerActiveSite._get_magnitude_of_effect_from_species('Co2+', 'high', 'oct')
+        self.assertEqual(m, "weak")
+        m = JahnTellerActiveSite._get_magnitude_of_effect_from_species('Co2+', 'low', 'oct')
+        self.assertEqual(m, "strong")
+
+        # 8
+        m = JahnTellerActiveSite._get_magnitude_of_effect_from_species('Ni2+', '', 'oct')
+        self.assertEqual(m, "none")
+
+        # 9
+        m = JahnTellerActiveSite._get_magnitude_of_effect_from_species('Cu2+', '', 'oct')
+        self.assertEqual(m, "strong")
+
+        # 10
+        m = JahnTellerActiveSite._get_magnitude_of_effect_from_species('Cu+', '', 'oct')
+        self.assertEqual(m, "none")
+        m = JahnTellerActiveSite._get_magnitude_of_effect_from_species('Zn2+', '', 'oct')
+        self.assertEqual(m, "none")
+
+    def test_site_analysis(self):
+
+        test_struct = Structure.from_file(os.path.join(test_dir, 'LiFePO4.json'))
+
+        ref_dict = {
+            'given_spin_state': 'default',
+            'ligand': 'O2-',
+            'ligand_bond_length_spread': 0.1543,
+            'ligand_bond_lengths': [2.1382, 2.084, 2.0863, 2.2383, 2.2215],
+            'magnitude': 'weak',
+            'motif': 'oct',
+            'motif_order_parameter': 0.4955
+        }
+
+        self.assertEqual(JahnTellerActiveSite().jahn_teller_site_analysis(test_struct, 4),
+                         ref_dict)
+
 
 if __name__ == '__main__':
     import unittest
