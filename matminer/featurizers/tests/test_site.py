@@ -299,6 +299,9 @@ class JahnTellerTest(PymatgenTest):
         self.assertEqual(JahnTellerActiveSite().jahn_teller_site_analysis(test_struct, 4),
                          ref_dict)
 
+        self.assertEqual(JahnTellerActiveSite().featurize(test_struct, 4),
+                         ['weak'])
+
 
 if __name__ == '__main__':
     import unittest
